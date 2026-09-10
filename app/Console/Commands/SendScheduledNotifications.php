@@ -25,10 +25,23 @@ class SendScheduledNotifications extends Command
     public function handle()
     {
         // AGENT REGISTERED
-        $agentResData = [];
+        $agentResArr = [];
 
-        $this->notification('AGENT_REGISTERED', 'Documents_never_uploaded', $agentResData);
-        // AGENT REGISTERED COMPLETED
+        $this->notification('AGENT_REGISTERED', 'Documents_never_uploaded', $agentResArr);
+
+        // DOCUMENT VERIFIED
+        $docVerifyArr = [];
+
+        // $this->notification('DOCUMENT_VERIFIED', 'Documents_never_uploaded', $docVerifyArr);
+
+        // EMAIL VERIFIED
+        $emailVerifyArr = [
+            'balance' => '2000',
+            'days' => '10',
+            'bonus' => '10%'
+        ];
+
+        // $this->notification('EMAIL_VERIFIED', 'Documents_never_uploaded', $emailVerifyArr);
 
         $this->info('Scheduled notification sent successfully.');
 
