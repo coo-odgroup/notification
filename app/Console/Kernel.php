@@ -14,7 +14,10 @@ class Kernel extends ConsoleKernel
     protected function schedule(Schedule $schedule)
     {
         $schedule->command('notification:process-queue')->everyMinute();
-       
+
+        // Jagan
+        $schedule->command('app:send-scheduled-notifications')->everyMinute();
+        // Jagan
     }
 
     protected function commands()
