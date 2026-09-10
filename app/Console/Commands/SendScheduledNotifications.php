@@ -10,9 +10,7 @@ use Illuminate\Support\Facades\Log;
 class SendScheduledNotifications extends Command
 {
     protected $signature = 'app:send-scheduled-notifications';
-
     protected $description = 'Send Scheduled notifications';
-
     protected $msg91Service;
 
     public function __construct(Msg91Service $msg91Service)
