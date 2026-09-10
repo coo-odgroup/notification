@@ -613,40 +613,27 @@ class ScheduleCampaignNotifications extends Command
         $schedules,
         $users
     ) {
-
         $totalUsers = $users->count();
 
         if ($totalUsers === 0) {
-
             return;
         }
+        $now = Carbon::now();
 
         /*
-        |--------------------------------------------------------------------------
-        | Build every minute slot
-        |--------------------------------------------------------------------------
-        */
+    |--------------------------------------------------------------------------
+    | Build only FUTURE minute slots
+    |--------------------------------------------------------------------------
+    */
 
         $slots = [];
-
         foreach ($schedules as $schedule) {
 
-            $start = Carbon::createFromFormat(
-                'Y-m-d H:i:s',
-                $schedule->schedule_date .
-                    ' ' .
-                    $schedule->start_time
-            );
-
-            $end = Carbon::createFromFormat(
-                'Y-m-d H:i:s',
-                $schedule->schedule_date .
-                    ' ' .
-                    $schedule->end_time
+            $start = Carbon::createFromFormat('Y-m-d H:i:s',$schedule->schedule_date .' ' .$schedule->start_time);
+            $end = Carbon::createFromFormat('Y-m-d H:i:s',$schedule->schedule_date .' ' .$schedule->end_time
             );
 
             $minutes = $start->diffInMinutes($end);
-
             if ($minutes <= 0) {
 
                 Log::warning('Invalid schedule time', [
@@ -661,28 +648,67 @@ class ScheduleCampaignNotifications extends Command
 
             for ($i = 0; $i < $minutes; $i++) {
 
-                $slots[] = $start
+                $scheduledTime = $start
                     ->copy()
                     ->addMinutes($i);
+
+                /*
+            |--------------------------------------------------------------------------
+            | IMPORTANT:
+            | Do NOT queue notifications whose scheduled time
+            | has already passed.
+            |--------------------------------------------------------------------------
+            */
+
+                if ($scheduledTime->lt($now)) {
+                    continue;
+                }
+
+                $slots[] = $scheduledTime;
             }
         }
 
         $totalSlots = count($slots);
 
+        /*
+    |--------------------------------------------------------------------------
+    | If there are NO future slots
+    |--------------------------------------------------------------------------
+    */
+
         if ($totalSlots === 0) {
 
-            Log::warning('No valid schedule slots', [
-                'campaign_id' => $campaign->id
-            ]);
+            Log::info(
+                'No future schedule slots found. Campaign will not be queued.',
+                [
+                    'campaign_id' => $campaign->id,
+                    'current_time' => $now->toDateTimeString(),
+                ]
+            );
+
+            /*
+        |--------------------------------------------------------------------------
+        | IMPORTANT:
+        | Deactivate the campaign so an old campaign is not
+        | reconsidered every minute.
+        |--------------------------------------------------------------------------
+        */
+
+            DB::table('notification_campaigns')
+                ->where('id', $campaign->id)
+                ->update([
+                    'active_status' => 0,
+                    'updated_at' => now(),
+                ]);
 
             return;
         }
 
         /*
-        |--------------------------------------------------------------------------
-        | Don't queue same campaign twice
-        |--------------------------------------------------------------------------
-        */
+    |--------------------------------------------------------------------------
+    | Don't queue same campaign twice
+    |--------------------------------------------------------------------------
+    */
 
         $alreadyQueued = DB::table(
             'notification_campaign_queue'
@@ -708,10 +734,10 @@ class ScheduleCampaignNotifications extends Command
         }
 
         /*
-        |--------------------------------------------------------------------------
-        | Distribute users across all slots
-        |--------------------------------------------------------------------------
-        */
+    |--------------------------------------------------------------------------
+    | Distribute users across FUTURE slots only
+    |--------------------------------------------------------------------------
+    */
 
         $usersArray = $users
             ->values()
@@ -753,6 +779,16 @@ class ScheduleCampaignNotifications extends Command
                 $scheduledTime =
                     $slots[$slotIndex];
 
+                /*
+            |--------------------------------------------------------------------------
+            | Extra safety check
+            |--------------------------------------------------------------------------
+            */
+
+                if ($scheduledTime->lt($now)) {
+                    continue;
+                }
+
                 $queueRows[] = [
                     'campaign_id' => $campaign->id,
                     'user_id' => $user->id,
@@ -783,35 +819,40 @@ class ScheduleCampaignNotifications extends Command
             }
 
             unset($queueRows);
+
             gc_collect_cycles();
         }
 
         /*
-        |--------------------------------------------------------------------------
-        | Update campaign counters
-        |--------------------------------------------------------------------------
-        */
+    |--------------------------------------------------------------------------
+    | IMPORTANT:
+    | Queue successfully created.
+    | Deactivate campaign so it cannot be recreated later.
+    |--------------------------------------------------------------------------
+    */
 
         DB::table('notification_campaigns')
-            ->where(
-                'id',
-                $campaign->id
-            )
+            ->where('id', $campaign->id)
             ->update([
                 'total_users' => $totalUsers,
+                'active_status' => 0,
                 'started_at' => null,
                 'is_completed' => 0,
+                'is_queued'  => 1,
                 'updated_at' => now(),
             ]);
 
         Log::info(
-            'Campaign notification queue created',
+            'Campaign notification queue created and campaign deactivated',
             [
                 'campaign_id' => $campaign->id,
                 'users' => $totalUsers,
                 'slots' => $totalSlots,
-                'first_schedule' => $slots[0]->toDateTimeString(),
-                'last_schedule' => $slots[$totalSlots - 1]->toDateTimeString(),
+                'first_schedule' =>
+                $slots[0]->toDateTimeString(),
+                'last_schedule' =>
+                $slots[$totalSlots - 1]->toDateTimeString(),
+                'active_status' => 0,
             ]
         );
     }
