@@ -14,6 +14,7 @@ class NotificationLogs extends Model
         'campaign_id',
         'queue_id',
         'user_id',
+        'mobile_no',
         'fcm_token',
         'notification_type',
         'fcm_message_id',

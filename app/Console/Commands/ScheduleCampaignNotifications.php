@@ -10,7 +10,6 @@ use Carbon\Carbon;
 class ScheduleCampaignNotifications extends Command
 {
     protected $signature = 'notifications:schedule-campaigns';
-
     protected $description = 'Create notification queue entries for scheduled campaigns';
 
     public function handle()
@@ -244,7 +243,6 @@ class ScheduleCampaignNotifications extends Command
     }
 
 
-
     private function getActiveUsers($campaign)
     {
         $activeSince = Carbon::now()
@@ -257,10 +255,12 @@ class ScheduleCampaignNotifications extends Command
                 'users.email',
                 'users.phone',
                 'users.fcm_id',
+                'users.login_status',
                 'users.updated_at'
             ])
             ->whereNotNull('users.fcm_id')
             ->where('users.fcm_id', '!=', '')
+            ->where('users.login_status', 1)
             ->where('users.updated_at', '>=', $activeSince)
             ->orderBy('users.id')
             ->get();
@@ -314,6 +314,7 @@ class ScheduleCampaignNotifications extends Command
             ->where('booking.created_at', '>=', $activeSince)
             ->whereNotNull('booking.users_id')
             ->whereNotNull('users.fcm_id')
+            ->where('users.login_status', 1)
             ->where('users.fcm_id', '!=', '');
 
         /*
@@ -425,6 +426,7 @@ class ScheduleCampaignNotifications extends Command
             ->where('booking.app_type', 'ANDROID')
             ->whereNotNull('booking.users_id')
             ->whereNotNull('users.fcm_id')
+            ->where('users.login_status', 1)
             ->where('users.fcm_id', '!=', '')
             ->where('booking.created_at', '>=', $activeSince)
 
@@ -546,6 +548,7 @@ class ScheduleCampaignNotifications extends Command
             ->where('booking.created_at', '>=', $activeSince)
             ->whereNotNull('booking.users_id')
             ->whereNotNull('users.fcm_id')
+            ->where('users.login_status', 1)
             ->where('users.fcm_id', '!=', '')
 
             ->select([
@@ -618,19 +621,47 @@ class ScheduleCampaignNotifications extends Command
         if ($totalUsers === 0) {
             return;
         }
+
+        // Re-check current user eligibility before creating queue
+        $eligibleUserIds = DB::table('users')
+            ->whereIn('id', $users->pluck('id')->filter()->unique())
+            ->whereNotNull('fcm_id')
+            ->where('fcm_id', '!=', '')
+            ->where('login_status', 1)
+            ->pluck('id')
+            ->flip();
+
+        $users = $users
+            ->filter(function ($user) use ($eligibleUserIds) {
+                return isset($eligibleUserIds[$user->id]);
+            })
+            ->values();
+
+        $totalUsers = $users->count();
+
+        if ($totalUsers === 0) {
+            Log::info('No eligible logged-in users found before queue creation', [
+                'campaign_id' => $campaign->id
+            ]);
+
+            return;
+        }
+
         $now = Carbon::now();
 
         /*
-    |--------------------------------------------------------------------------
-    | Build only FUTURE minute slots
-    |--------------------------------------------------------------------------
-    */
+        |--------------------------------------------------------------------------
+        | Build only FUTURE minute slots
+        |--------------------------------------------------------------------------
+        */
 
         $slots = [];
         foreach ($schedules as $schedule) {
 
-            $start = Carbon::createFromFormat('Y-m-d H:i:s',$schedule->schedule_date .' ' .$schedule->start_time);
-            $end = Carbon::createFromFormat('Y-m-d H:i:s',$schedule->schedule_date .' ' .$schedule->end_time
+            $start = Carbon::createFromFormat('Y-m-d H:i:s', $schedule->schedule_date . ' ' . $schedule->start_time);
+            $end = Carbon::createFromFormat(
+                'Y-m-d H:i:s',
+                $schedule->schedule_date . ' ' . $schedule->end_time
             );
 
             $minutes = $start->diffInMinutes($end);
@@ -671,10 +702,10 @@ class ScheduleCampaignNotifications extends Command
         $totalSlots = count($slots);
 
         /*
-    |--------------------------------------------------------------------------
-    | If there are NO future slots
-    |--------------------------------------------------------------------------
-    */
+            |--------------------------------------------------------------------------
+            | If there are NO future slots
+            |--------------------------------------------------------------------------
+            */
 
         if ($totalSlots === 0) {
 
@@ -687,12 +718,12 @@ class ScheduleCampaignNotifications extends Command
             );
 
             /*
-        |--------------------------------------------------------------------------
-        | IMPORTANT:
-        | Deactivate the campaign so an old campaign is not
-        | reconsidered every minute.
-        |--------------------------------------------------------------------------
-        */
+            |--------------------------------------------------------------------------
+            | IMPORTANT:
+            | Deactivate the campaign so an old campaign is not
+            | reconsidered every minute.
+            |--------------------------------------------------------------------------
+            */
 
             DB::table('notification_campaigns')
                 ->where('id', $campaign->id)
@@ -705,10 +736,10 @@ class ScheduleCampaignNotifications extends Command
         }
 
         /*
-    |--------------------------------------------------------------------------
-    | Don't queue same campaign twice
-    |--------------------------------------------------------------------------
-    */
+            |--------------------------------------------------------------------------
+            | Don't queue same campaign twice
+            |--------------------------------------------------------------------------
+            */
 
         $alreadyQueued = DB::table(
             'notification_campaign_queue'
@@ -734,10 +765,10 @@ class ScheduleCampaignNotifications extends Command
         }
 
         /*
-    |--------------------------------------------------------------------------
-    | Distribute users across FUTURE slots only
-    |--------------------------------------------------------------------------
-    */
+            |--------------------------------------------------------------------------
+            | Distribute users across FUTURE slots only
+            |--------------------------------------------------------------------------
+            */
 
         $usersArray = $users
             ->values()
@@ -824,12 +855,12 @@ class ScheduleCampaignNotifications extends Command
         }
 
         /*
-    |--------------------------------------------------------------------------
-    | IMPORTANT:
-    | Queue successfully created.
-    | Deactivate campaign so it cannot be recreated later.
-    |--------------------------------------------------------------------------
-    */
+            |--------------------------------------------------------------------------
+            | IMPORTANT:
+            | Queue successfully created.
+            | Deactivate campaign so it cannot be recreated later.
+            |--------------------------------------------------------------------------
+            */
 
         DB::table('notification_campaigns')
             ->where('id', $campaign->id)
@@ -857,26 +888,29 @@ class ScheduleCampaignNotifications extends Command
         );
     }
 
-    /*
-        |--------------------------------------------------------------------------
-        | SELECTED USERS
-        |--------------------------------------------------------------------------
-        */
 
     private function getSelectedUsers($campaign)
     {
-        return DB::table('notification_campaign_selected_users')
+        return DB::table('notification_campaign_selected_users as ncsu')
+            ->join(
+                'users',
+                'users.id',
+                '=',
+                'ncsu.selected_users'
+            )
             ->select([
-                'selected_users as id',
-                'user_name as name',
-                'email',
-                'mobile as phone',
-                'fcm_id',
+                'users.id',
+                'users.name',
+                'users.email',
+                'users.phone',
+                'users.fcm_id',
+                'users.login_status',
             ])
-            ->where('campaign_id', $campaign->id)
-            ->whereNotNull('fcm_id')
-            ->where('fcm_id', '!=', '')
-            ->orderBy('id')
+            ->where('ncsu.campaign_id', $campaign->id)
+            ->whereNotNull('users.fcm_id')
+            ->where('users.fcm_id', '!=', '')
+            ->where('users.login_status', 1)
+            ->orderBy('users.id')
             ->get();
     }
 }

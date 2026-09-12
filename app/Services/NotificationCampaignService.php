@@ -491,8 +491,7 @@ class NotificationCampaignService
 
         return $createdCount > 0;
     }
-
-
+     
     public function queueBookingNotifications(int $bookingId): bool
     {
         DB::beginTransaction();
@@ -730,7 +729,6 @@ class NotificationCampaignService
         }
     }
 
-
     public function processNotificationQueue()
     {
         try {
@@ -754,10 +752,17 @@ class NotificationCampaignService
 
             foreach ($notifications as $notification) {
 
+                // Reset status for every queue item
+                $notificationStatus = 'FAILED';
+
                 // Get notification type from campaign
                 $notificationType = DB::table('notification_campaigns')
                     ->where('id', $notification->campaign_id)
                     ->value('type');
+
+                $mobileNo = DB::table('users')
+                    ->where('id', $notification->user_id)
+                    ->value('phone');
 
                 $notification->notification_type = $notificationType;
                 $startTime = microtime(true);
@@ -794,6 +799,7 @@ class NotificationCampaignService
                         'notification_type' => $notification->notification_type,
                         'queue_id'          => $notification->id,
                         'user_id'           => $notification->user_id,
+                        'mobile_no'         => $mobileNo,
                         'fcm_token'         => $notification->fcm_token,
                         'fcm_message_id'    => null,
                         'status'            => 'FAILED',
@@ -823,15 +829,33 @@ class NotificationCampaignService
                         'title' => $notification->title,
                     ]);
 
-                    
+
                     $firebaseResponse = $this->sendPushNotification(
                         $notification->fcm_token,
                         $notification->title,
                         $notification->message
                     );
 
-                    Log::info('Fire Base  Response', $firebaseResponse);
+                    Log::info('Fire Base Response', $firebaseResponse);
 
+                    /*
+                    |--------------------------------------------------------------------------
+                    | Determine FCM response status
+                    |--------------------------------------------------------------------------
+                    */
+                    $notificationStatus = 'SUCCESS';
+
+                    if ($this->isInvalidTokenResponse($firebaseResponse)) {
+                        $notificationStatus = 'INVALID_TOKEN';
+
+                        Log::warning('Invalid FCM token detected', [
+                            'queue_id'       => $notification->id,
+                            'campaign_id'    => $notification->campaign_id,
+                            'user_id'        => $notification->user_id,
+                            'fcm_token'      => substr($notification->fcm_token, 0, 25) . '...',
+                            'firebase_response' => $firebaseResponse,
+                        ]);
+                    }
                     $responseTime = round(
                         (microtime(true) - $startTime) * 1000,
                         2
@@ -863,9 +887,10 @@ class NotificationCampaignService
                         'notification_type' => $notification->notification_type,
                         'queue_id'          => $notification->id,
                         'user_id'           => $notification->user_id,
+                        'mobile_no'         => $mobileNo,
                         'fcm_token'         => $notification->fcm_token,
                         'fcm_message_id'    => $firebaseMessageId,
-                        'status'            => 'SUCCESS',
+                        'status'            => $notificationStatus,
                         'error_code'        => null,
                         'error_message'     => null,
                         'firebase_response' => is_array($firebaseResponse)
@@ -886,16 +911,16 @@ class NotificationCampaignService
                  * UPDATE QUEUE
                  */
                     $notification->update([
-                        'status' => 'SUCCESS',
+                        'status' => $notificationStatus,
                         'processed_at' => now(),
                         'retry_count' => $notification->retry_count + 1,
-                        'error_message' => null,
-                        'error_code' => null
+                        'error_message' => $notificationStatus === 'INVALID_TOKEN' ? 'Invalid or unregistered FCM token' : null,
+                        'error_code' => $notificationStatus === 'INVALID_TOKEN' ? 'INVALID_TOKEN' : null
                     ]);
 
                     Log::info('Notification queue updated successfully', [
                         'queue_id' => $notification->id,
-                        'status' => 'SUCCESS'
+                        'status'   => $notificationStatus
                     ]);
                 } catch (\Throwable $e) {
 
@@ -921,6 +946,7 @@ class NotificationCampaignService
                         'notification_type' => $notification->notification_type,
                         'queue_id'          => $notification->id,
                         'user_id'           => $notification->user_id,
+                        'mobile_no'         => $mobileNo,
                         'fcm_token'         => $notification->fcm_token,
                         'fcm_message_id'    => null,
                         'status'            => 'FAILED',
@@ -963,15 +989,48 @@ class NotificationCampaignService
                     Log::info('Notification log batch insert SUCCESS', [
                         'inserted_count' => count($notificationLogs),
                     ]);
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | INVALID TOKEN → Mark User Logged Out
+                    |--------------------------------------------------------------------------
+                    |
+                    | Only change login_status after the INVALID_TOKEN log
+                    | has been successfully inserted.
+                    |
+                    */
+
+                    foreach ($notificationLogs as $log) {
+
+                        if (($log['status'] ?? null) !== 'INVALID_TOKEN') {
+                            continue;
+                        }
+
+                        $updated = DB::table('users')
+                            ->where('id', $log['user_id'])
+                            ->where('login_status', 1)
+                            ->update([
+                                'login_status' => 2,
+                                'fcm_id'       => null,
+                                'updated_at'   => now(),
+                            ]);
+
+                        Log::warning('User login_status changed due to INVALID FCM token', [
+                            'user_id'      => $log['user_id'],
+                            'queue_id'     => $log['queue_id'],
+                            'login_status' => '1 → 2',
+                            'rows_updated' => $updated,
+                        ]);
+                    }
                 } catch (\Throwable $e) {
 
                     Log::error('Notification log batch insert FAILED', [
-                        'count' => count($notificationLogs),
-                        'error_code' => (string) $e->getCode(),
+                        'count'         => count($notificationLogs),
+                        'error_code'    => (string) $e->getCode(),
                         'error_message' => $e->getMessage(),
-                        'file' => $e->getFile(),
-                        'line' => $e->getLine(),
-                        'trace' => $e->getTraceAsString(),
+                        'file'          => $e->getFile(),
+                        'line'          => $e->getLine(),
+                        'trace'         => $e->getTraceAsString(),
                     ]);
                 }
             } else {
@@ -990,5 +1049,20 @@ class NotificationCampaignService
                 'trace' => $e->getTraceAsString()
             ]);
         }
+    }
+
+    protected function isInvalidTokenResponse($response): bool
+    {
+        if (!is_array($response)) {
+            return false;
+        }
+
+        $responseText = json_encode($response);
+
+        return str_contains($responseText, 'UNREGISTERED')
+            || str_contains($responseText, 'INVALID_ARGUMENT')
+            || str_contains($responseText, 'Invalid registration token')
+            || str_contains($responseText, 'NOT_FOUND')
+            || str_contains($responseText, 'NotRegistered');
     }
 }
