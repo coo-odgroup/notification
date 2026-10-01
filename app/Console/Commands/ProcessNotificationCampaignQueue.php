@@ -3,363 +3,178 @@
 namespace App\Console\Commands;
 
 use App\Models\NotificationCampaignQueue;
-use App\Models\NotificationCampaign;
-use App\Traits\PushNotificationTrait;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
-use App\Models\NotificationLogs;
-use Illuminate\Support\Facades\DB;
+use App\Jobs\SendNotificationJob;
+use Throwable;
 
 class ProcessNotificationCampaignQueue extends Command
 {
-    use PushNotificationTrait;
-
     protected $signature = 'notification:process-queue';
-    protected $description = 'Process pending notification campaign queue items in batches of 200';
 
-    public function __construct()
-    {
-        parent::__construct();
-    }
+    protected $description = 'Dispatch due notification campaign queue records to RabbitMQ';
 
     public function handle()
     {
-        Log::info('Notification Queue Job Started', [
-            'time' => Carbon::now()->toDateTimeString()
-        ]);
+        $now = Carbon::now();
 
-        $queueItems = NotificationCampaignQueue::where('status', 'PENDING')
-            ->where('scheduled_time', '<=', Carbon::now())
-            ->orderBy('scheduled_time')
-            ->limit(200)
+        Log::info('Notification Queue Dispatcher Started');
+        Log::info('Current Time: ' . $now->toDateTimeString());
+        Log::info('==============================================');
+
+        /*
+        |--------------------------------------------------------------------------
+        | Get notifications which are due
+        |--------------------------------------------------------------------------
+        */
+
+        $notifications = NotificationCampaignQueue::where('status', 'PENDING')
+            ->where('scheduled_time', '<=', $now)
+            ->orderBy('id', 'asc')
+            ->limit(500)
             ->get();
 
-        if ($queueItems->isEmpty()) {
-            Log::info('Notification campaign queue: no pending items to process');
-            return 0;
+        Log::info('Due notifications found: ' . $notifications->count());
+
+        if ($notifications->isEmpty()) {
+            Log::info('No due notifications found.');
+            return Command::SUCCESS;
         }
 
-        Log::info('Pending notifications fetched', [
-            'count' => $queueItems->count()
-        ]);
+        foreach ($notifications as $notification) {
 
-        foreach ($queueItems as $item) {
+            try {
 
-            $campaign = $item->campaign;
+                /*
+                |--------------------------------------------------------------------------
+                | Atomic PENDING -> QUEUED
+                |--------------------------------------------------------------------------
+                */
 
-            Log::info('Processing queue item', [
-                'queue_id'       => $item->id,
-                'campaign_id'    => $item->campaign_id,
-                'user_id'        => $item->user_id,
-                'booking_id'     => $item->booking_id,
-                'scheduled_time' => $item->scheduled_time,
-                'status'         => $item->status,
-                'image_url'      => $item->image_url,
-            ]);
+                $claimed = NotificationCampaignQueue::where('id', $notification->id)
+                    ->where('status', 'PENDING')
+                    ->update([
+                        'status' => 'QUEUED',
+                        'queued_at' => $now,
+                        'updated_at' => $now,
+                    ]);
 
-            /*
-        |--------------------------------------------------------------------------
-        | Campaign check
-        |--------------------------------------------------------------------------
-        */
-            if (!$campaign) {
+                if ($claimed !== 1) {
 
-                Log::warning('Campaign not found', [
-                    'queue_id'    => $item->id,
-                    'campaign_id' => $item->campaign_id,
-                ]);
+                    Log::warning(
+                        'Notification already claimed. Skipping.',
+                        [
+                            'queue_id' => $notification->id,
+                        ]
+                    );
 
-                $item->update([
-                    'status'        => 'FAILED',
-                    'processed_at'  => Carbon::now(),
-                    'error_message' => 'Missing campaign record',
-                ]);
+                    continue;
+                }
 
-                continue;
-            }
+                /*
+                |--------------------------------------------------------------------------
+                | Dispatch Job to RabbitMQ
+                |--------------------------------------------------------------------------
+                */
 
-            /*
-        |--------------------------------------------------------------------------
-        | Check CURRENT user status before sending
-        |--------------------------------------------------------------------------
-        |
-        | This is important because the user may have logged out AFTER
-        | the notification was added to the queue.
-        |
-        */
-            $user = DB::table('users')
-                ->where('id', $item->user_id)
-                ->first();
+                /*
+                    |--------------------------------------------------------------------------
+                    | RabbitMQ Configuration Debug
+                    |--------------------------------------------------------------------------
+                    */
 
-            if (
-                !$user ||
-                (int) $user->login_status !== 1 ||
-                empty($user->fcm_id)
-            ) {
-
-                Log::info('Skipping notification - user is no longer eligible', [
-                    'queue_id'     => $item->id,
-                    'campaign_id'  => $item->campaign_id,
-                    'user_id'      => $item->user_id,
-                    'login_status' => $user->login_status ?? null,
-                    'has_fcm_id'   => !empty($user->fcm_id ?? null),
-                ]);
-
-                $item->update([
-                    'status'         => 'SKIPPED',
-                    'processed_at'   => Carbon::now(),
-                    'error_code'     => 'USER_NOT_ELIGIBLE',
-                    'error_message'  => 'User is logged out or FCM token is no longer available',
+                Log::info('RabbitMQ Dispatch Configuration', [
+                    'queue_id' => $notification->id,
+                    'connection' => config('queue.default'),
+                    'rabbitmq_queue' => config('queue.connections.rabbitmq.queue'),
+                    'rabbitmq_host' => config('queue.connections.rabbitmq.hosts.0.host'),
+                    'rabbitmq_port' => config('queue.connections.rabbitmq.hosts.0.port'),
+                    'rabbitmq_vhost' => config('queue.connections.rabbitmq.hosts.0.vhost'),
                 ]);
 
                 /*
-             * SKIPPED is not a failed notification.
-             * It counts as processed, but not failed.
-             */
-                $campaign->increment('processed_users');
+                |--------------------------------------------------------------------------
+                | Test RabbitMQ Connection Before Dispatch
+                |--------------------------------------------------------------------------
+                */
 
-                continue;
-            }
+                try {
 
-            /*
-        |--------------------------------------------------------------------------
-        | Use CURRENT FCM token
-        |--------------------------------------------------------------------------
-        */
-            $fcmToken = $user->fcm_id;
+                    $rabbitConnection = app('queue')
+                        ->connection('rabbitmq')
+                        ->getConnection();
 
-            /*
-        |--------------------------------------------------------------------------
-        | Update queue token if user's token has changed
-        |--------------------------------------------------------------------------
-        */
-            if ($item->fcm_token !== $fcmToken) {
+                    Log::info('RabbitMQ Connection Object Created', [
+                        'class' => get_class($rabbitConnection),
+                        'connected' => method_exists($rabbitConnection, 'isConnected')
+                            ? $rabbitConnection->isConnected()
+                            : 'method_not_available',
+                    ]);
+                } catch (Throwable $rabbitException) {
 
-                Log::info('Updating queue with latest FCM token', [
-                    'queue_id' => $item->id,
-                    'user_id'  => $item->user_id,
-                ]);
+                    Log::error('RabbitMQ Connection Test FAILED', [
+                        'queue_id' => $notification->id,
+                        'error' => $rabbitException->getMessage(),
+                        'file' => $rabbitException->getFile(),
+                        'line' => $rabbitException->getLine(),
+                    ]);
 
-                $item->update([
-                    'fcm_token' => $fcmToken,
-                ]);
-            }
-
-            /*
-        |--------------------------------------------------------------------------
-        | FCM token check
-        |--------------------------------------------------------------------------
-        */
-            if (empty($fcmToken)) {
-
-                Log::warning('FCM token missing', [
-                    'queue_id' => $item->id,
-                    'user_id'  => $item->user_id,
-                ]);
-
-                $item->update([
-                    'status'        => 'FAILED',
-                    'processed_at'  => Carbon::now(),
-                    'error_message' => 'Missing FCM token',
-                ]);
-
-                $campaign->increment('processed_users');
-                $campaign->increment('failed_users');
-
-                continue;
-            }
-
-            /*
-        |--------------------------------------------------------------------------
-        | Send Push Notification
-        |--------------------------------------------------------------------------
-        */
-            Log::info('Sending Push Notification', [
-                'queue_id'  => $item->id,
-                'title'     => $item->title,
-                'message'   => $item->message,
-                'image_url' => $item->image_url,
-                'token'     => substr($fcmToken, 0, 25) . '...',
-            ]);
-
-            try {
-
-                $response = $this->sendPushNotification(
-                    $fcmToken,
-                    $item->title,
-                    $item->message,
-                    [
-                        'campaign_id' => $item->campaign_id,
-                        'booking_id'  => $item->booking_id,
-                        'user_id'     => $item->user_id,
-                    ],
-                    $item->image_url
-                );
-            } catch (\Throwable $e) {
-
-                Log::error('Push Notification Exception', [
-                    'queue_id' => $item->id,
-                    'error'    => $e->getMessage(),
-                    'trace'    => $e->getTraceAsString(),
-                ]);
-
-                $item->update([
-                    'status'        => 'FAILED',
-                    'processed_at'  => Carbon::now(),
-                    'error_message' => $e->getMessage(),
-                ]);
-
-                $campaign->increment('processed_users');
-                $campaign->increment('failed_users');
-
-                continue;
-            }
-
-            /*
-        |--------------------------------------------------------------------------
-        | Determine notification status
-        |--------------------------------------------------------------------------
-        */
-            $status = !empty($response['status'])
-                ? 'SUCCESS'
-                : 'FAILED';
-
-            $errorMessage = !empty($response['status'])
-                ? null
-                : ($response['message'] ?? 'Push notification failed');
-
-            /*
-        |--------------------------------------------------------------------------
-        | Detect invalid FCM token
-        |--------------------------------------------------------------------------
-        */
-            if (
-                empty($response['status']) &&
-                $this->isInvalidTokenResponse($response)
-            ) {
-                $status = 'INVALID_TOKEN';
-            }
-
-            Log::info('Push Notification Response', [
-                'queue_id' => $item->id,
-                'response' => $response
-            ]);
-
-            /*
-        |--------------------------------------------------------------------------
-        | Notification Log
-        |--------------------------------------------------------------------------
-        */
-            try {
-
-                $firebaseMessageId = null;
-
-                if (is_array($response)) {
-
-                    $fullMessageName =
-                        data_get($response, 'response.name')
-                        ?? data_get($response, 'name');
-
-                    if ($fullMessageName) {
-
-                        $firebaseMessageId = str_replace(
-                            'projects/odbus-c581f/messages/',
-                            '',
-                            $fullMessageName
-                        );
-                    }
+                    throw $rabbitException;
                 }
 
-                $logData = [
-                    'campaign_id'       => $item->campaign_id,
-                    'queue_id'          => $item->id,
-                    'user_id'           => $item->user_id,
+                /*
+                |--------------------------------------------------------------------------
+                | Dispatch Job
+                |--------------------------------------------------------------------------
+                */
 
-                    // Use latest token
-                    'fcm_token'         => $fcmToken,
-
-                    'fcm_message_id'    => $firebaseMessageId,
-                    'status'            => $status,
-                    'error_code'        => null,
-                    'error_message'     => $errorMessage,
-                    'firebase_response' => json_encode($response),
-                    'sent_at'           => $status === 'SUCCESS'
-                        ? Carbon::now()
-                        : null,
-                    'response_time_ms'  => null,
-                    'created_at'        => Carbon::now(),
-                ];
-
-                Log::info('NOTIFICATION LOG DATA BEFORE INSERT', [
-                    'queue_id' => $item->id,
-                    'log_data' => $logData
+                Log::info('RabbitMQ Dispatch STARTING', [
+                    'queue_id' => $notification->id,
+                    'queue' => config('queue.connections.rabbitmq.queue'),
                 ]);
 
-                $notificationLog = NotificationLogs::create($logData);
+                SendNotificationJob::dispatch($notification->id)
+                    ->onConnection('rabbitmq')
+                    ->onQueue(config('queue.connections.rabbitmq.queue'))
+                    ->afterCommit();
 
-                Log::info('NOTIFICATION LOG INSERTED SUCCESSFULLY', [
-                    'log_id'   => $notificationLog->id,
-                    'queue_id' => $item->id,
-                    'status'   => $status
+                Log::info('RabbitMQ Dispatch SUCCESS', [
+                    'queue_id' => $notification->id,
+                    'queue' => config('queue.connections.rabbitmq.queue'),
                 ]);
-            } catch (\Throwable $e) {
+            } catch (Throwable $e) {
 
-                Log::error('NOTIFICATION LOG INSERT FAILED', [
-                    'queue_id'    => $item->id,
-                    'campaign_id' => $item->campaign_id,
-                    'user_id'     => $item->user_id,
-                    'error'       => $e->getMessage(),
-                    'file'        => $e->getFile(),
-                    'line'        => $e->getLine(),
-                    'trace'       => $e->getTraceAsString(),
-                ]);
+                /*
+                |--------------------------------------------------------------------------
+                | If RabbitMQ dispatch fails
+                |--------------------------------------------------------------------------
+                */
+
+                NotificationCampaignQueue::where('id', $notification->id)
+                    ->where('status', 'QUEUED')
+                    ->update([
+                        'status' => 'PENDING',
+                        'queued_at' => null,
+                        'updated_at' => Carbon::now(),
+                        'error_message' => $e->getMessage(),
+                    ]);
+
+                Log::error(
+                    'Failed to dispatch notification to RabbitMQ.',
+                    [
+                        'queue_id' => $notification->id,
+                        'error' => $e->getMessage(),
+                        'trace' => $e->getTraceAsString(),
+                    ]
+                );
             }
-
-            /*
-        |--------------------------------------------------------------------------
-        | Update Queue
-        |--------------------------------------------------------------------------
-        */
-            $item->update([
-                'status'        => $status,
-                'processed_at'  => Carbon::now(),
-                'error_message' => $errorMessage,
-            ]);
-
-            /*
-        |--------------------------------------------------------------------------
-        | Update Campaign Counters
-        |--------------------------------------------------------------------------
-        */
-            $campaign->increment('processed_users');
-
-            if ($status === 'SUCCESS') {
-
-                $campaign->increment('success_users');
-            } else {
-
-                $campaign->increment('failed_users');
-            }
-
-            Log::info('Queue Updated', [
-                'queue_id' => $item->id,
-                'status'   => $status
-            ]);
         }
 
-        Log::info('Notification Queue Job Finished');
+        Log::info('==============================================');
+        Log::info('Notification Queue Dispatcher Finished');
+        Log::info('==============================================');
 
-        return 0;
-    }
-
-    protected function isInvalidTokenResponse(array $response)
-    {
-        $payload = json_encode($response['response'] ?? []);
-
-        return (strpos($payload, 'UNREGISTERED') !== false)
-            || (strpos($payload, 'INVALID_ARGUMENT') !== false)
-            || (strpos($payload, 'Invalid registration token') !== false)
-            || (strpos($payload, 'NOT_FOUND') !== false);
+        return Command::SUCCESS;
     }
 }

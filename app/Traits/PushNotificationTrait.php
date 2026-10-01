@@ -5,7 +5,6 @@ namespace App\Traits;
 use Google\Auth\Credentials\ServiceAccountCredentials;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use App\Models\NotificationLogs;
 
 trait PushNotificationTrait
 {
@@ -62,13 +61,21 @@ trait PushNotificationTrait
              * This can be useful if the Android app handles
              * the notification itself.
              */
+
             if (!empty($imageUrl)) {
+
+                $imageBaseUrl = rtrim(
+                    config('constant.campaign_notification.image_base_url'),
+                    '/'
+                );
+
+                $imageUrl = $imageBaseUrl . '/' . ltrim($imageUrl, '/');
+
                 $data['image_url'] = $imageUrl;
             }
-
             /*
-             * Base FCM payload
-             */
+            * Base FCM payload
+            */
             $payload = [
                 'message' => [
                     'token' => $deviceToken,
@@ -83,24 +90,40 @@ trait PushNotificationTrait
                             'sound' => 'default',
                         ],
                     ],
-
-                    'data' => $data,
                 ]
             ];
 
             /*
+            * Add data only when there is actual data.
+            *
+            * FCM HTTP v1 expects data to be a map:
+            * {
+            *     "key": "value"
+            * }
+            *
+            * Do NOT send:
+            * "data": []
+            */
+            if (!empty($data)) {
+                $payload['message']['data'] = $data;
+            }
+
+            /*
              * Add image to FCM notification
              */
+            /*
+                * Add image to FCM notification
+                */
             if (!empty($imageUrl)) {
 
                 /*
-                 * This is important for FCM notification messages
-                 */
-                $payload['message']['notification']['image'] = $imageUrl;
+                    * This is important for FCM notification messages
+                    */
+                                $payload['message']['notification']['image'] = $imageUrl;
 
                 /*
-                 * Android notification image
-                 */
+                * Android notification image
+                */
                 $payload['message']['android']['notification']['image'] = $imageUrl;
             }
 

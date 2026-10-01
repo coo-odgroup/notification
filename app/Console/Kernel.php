@@ -16,10 +16,11 @@ class Kernel extends ConsoleKernel
 
     protected function schedule(Schedule $schedule)
     {
-        $schedule->command('notification:prepare-abandoned')->everyMinute();
-        $schedule->command('notification:process-queue')->everyMinute();
+        
+        $schedule->command('notification:process-queue')->everyMinute()->withoutOverlapping();
         $schedule->command('notifications:schedule-campaigns')->everyMinute();
-        $schedule->command('notifications:delete-old-queue')->everyMinute(); // Delets the 3 month old notifiocation from notification_campaign_queue table
+        $schedule->command('notification:prepare-abandoned')->everyMinute();
+        $schedule->command('notifications:delete-old-queue')->dailyAt('00:00'); // Delets the 3 month old notifiocation from notification_campaign_queue table
 
 
         // Jagan
