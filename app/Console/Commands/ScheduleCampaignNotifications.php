@@ -53,11 +53,8 @@ class ScheduleCampaignNotifications extends Command
 
             try {
 
-                /*
-                |--------------------------------------------------------------------------
-                | Get schedule rows
-                |--------------------------------------------------------------------------
-                */
+                //Get schedule rows
+               
 
                 $schedules = DB::table('notification_campaign_schedule')
                     ->where('notification_campaign_id', $campaign->id)
@@ -74,11 +71,8 @@ class ScheduleCampaignNotifications extends Command
                     continue;
                 }
 
-                /*
-                |--------------------------------------------------------------------------
-                | ACTIVE TARGET
-                |--------------------------------------------------------------------------
-                */
+                //ACTIVE TARGET
+               
 
                 if ($campaign->target_type === 'ACTIVE') {
 
@@ -155,12 +149,8 @@ class ScheduleCampaignNotifications extends Command
                     continue;
                 }
 
-                /*
-                |--------------------------------------------------------------------------
-                | CUSTOM TARGET
-                |--------------------------------------------------------------------------
-                */
-
+                // CUSTOM TARGET
+              
                 if ($campaign->target_type === 'CUSTOM') {
 
                     $custom = DB::table('notification_campaign_custom')

@@ -10,7 +10,9 @@ use Carbon\Carbon;
 class DeleteOldNotificationCampaignQueue extends Command
 {
     protected $signature = 'notifications:delete-old-queue';
-    protected $description = 'Permanently delete notification campaign queue records older than 3 months';
+
+    protected $description =
+        'Permanently delete notification campaign queue records older than 7 days and notification logs older than 14 days';
 
     public function handle()
     {
@@ -20,26 +22,38 @@ class DeleteOldNotificationCampaignQueue extends Command
             'time' => $now->toDateTimeString()
         ]);
 
-        /*
-        |--------------------------------------------------------------------------
-        | Delete records older than 3 months
-        |--------------------------------------------------------------------------
-        */
 
-        $cutoffDate = $now->copy()->subMonths(3);
+        $cutoffDateQueue = $now->copy()->subDays(7);
+        $cutoffDateLogs = $now->copy()->subDays(14);
 
-        $deleted = DB::table('notification_campaign_queue')
-            ->where('updated_at', '<', $cutoffDate)
+
+        $deletedQueue = DB::table('notification_campaign_queue')
+            ->where('updated_at', '<', $cutoffDateQueue)
             ->delete();
 
+        $deletedLogs = DB::table('notification_logs')
+            ->where('updated_at', '<', $cutoffDateLogs)
+            ->delete();
+     
         Log::info('Old Notification Queue Cleanup Finished', [
-            'cutoff_date' => $cutoffDate->toDateTimeString(),
-            'deleted_rows' => $deleted
+            'cutoff_date' => $cutoffDateQueue->toDateTimeString(),
+            'deleted_rows' => $deletedQueue
         ]);
 
+        Log::info('Old Notification Logs Cleanup Finished', [
+            'cutoff_date' => $cutoffDateLogs->toDateTimeString(),
+            'deleted_rows' => $deletedLogs
+        ]);
+
+
         $this->info(
-            "Deleted {$deleted} notification queue records older than 3 months."
+            "Deleted {$deletedQueue} notification queue records older than 7 days."
         );
+
+        $this->info(
+            "Deleted {$deletedLogs} notification log records older than 14 days."
+        );
+
 
         return Command::SUCCESS;
     }

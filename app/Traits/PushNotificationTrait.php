@@ -93,43 +93,17 @@ trait PushNotificationTrait
                 ]
             ];
 
-            /*
-            * Add data only when there is actual data.
-            *
-            * FCM HTTP v1 expects data to be a map:
-            * {
-            *     "key": "value"
-            * }
-            *
-            * Do NOT send:
-            * "data": []
-            */
+
             if (!empty($data)) {
                 $payload['message']['data'] = $data;
             }
 
-            /*
-             * Add image to FCM notification
-             */
-            /*
-                * Add image to FCM notification
-                */
+
             if (!empty($imageUrl)) {
 
-                /*
-                    * This is important for FCM notification messages
-                    */
-                                $payload['message']['notification']['image'] = $imageUrl;
-
-                /*
-                * Android notification image
-                */
                 $payload['message']['android']['notification']['image'] = $imageUrl;
             }
 
-            /*
-             * Log the actual payload for testing
-             */
             Log::info('FCM Payload', [
                 'payload' => $payload
             ]);
@@ -149,15 +123,31 @@ trait PushNotificationTrait
 
             if (!$response->successful()) {
 
+                $firebaseResponse = $response->json();
+
+                $firebaseErrorCode = data_get(
+                    $firebaseResponse,
+                    'error.status'
+                );
+
+                $firebaseErrorMessage = data_get(
+                    $firebaseResponse,
+                    'error.message'
+                );
+
                 Log::error('FCM Notification Failed', [
-                    'status'   => $response->status(),
-                    'response' => $response->body(),
+                    'http_status'   => $response->status(),
+                    'error_code'    => $firebaseErrorCode,
+                    'error_message' => $firebaseErrorMessage,
+                    'response'      => $firebaseResponse,
                 ]);
 
                 return [
-                    'status'   => false,
-                    'message'  => 'FCM notification failed.',
-                    'response' => $response->json(),
+                    'status'       => false,
+                    'message'      => $firebaseErrorMessage ?: 'FCM notification failed.',
+                    'error_code'   => $firebaseErrorCode,
+                    'response'     => $firebaseResponse,
+                    'http_status'  => $response->status(),
                 ];
             }
 

@@ -23,12 +23,6 @@ class ProcessNotificationCampaignQueue extends Command
         Log::info('Current Time: ' . $now->toDateTimeString());
         Log::info('==============================================');
 
-        /*
-        |--------------------------------------------------------------------------
-        | Get notifications which are due
-        |--------------------------------------------------------------------------
-        */
-
         $notifications = NotificationCampaignQueue::where('status', 'PENDING')
             ->where('scheduled_time', '<=', $now)
             ->orderBy('id', 'asc')
@@ -45,12 +39,6 @@ class ProcessNotificationCampaignQueue extends Command
         foreach ($notifications as $notification) {
 
             try {
-
-                /*
-                |--------------------------------------------------------------------------
-                | Atomic PENDING -> QUEUED
-                |--------------------------------------------------------------------------
-                */
 
                 $claimed = NotificationCampaignQueue::where('id', $notification->id)
                     ->where('status', 'PENDING')
@@ -72,18 +60,7 @@ class ProcessNotificationCampaignQueue extends Command
                     continue;
                 }
 
-                /*
-                |--------------------------------------------------------------------------
-                | Dispatch Job to RabbitMQ
-                |--------------------------------------------------------------------------
-                */
-
-                /*
-                    |--------------------------------------------------------------------------
-                    | RabbitMQ Configuration Debug
-                    |--------------------------------------------------------------------------
-                    */
-
+      
                 Log::info('RabbitMQ Dispatch Configuration', [
                     'queue_id' => $notification->id,
                     'connection' => config('queue.default'),
@@ -93,11 +70,7 @@ class ProcessNotificationCampaignQueue extends Command
                     'rabbitmq_vhost' => config('queue.connections.rabbitmq.hosts.0.vhost'),
                 ]);
 
-                /*
-                |--------------------------------------------------------------------------
-                | Test RabbitMQ Connection Before Dispatch
-                |--------------------------------------------------------------------------
-                */
+
 
                 try {
 
@@ -123,11 +96,6 @@ class ProcessNotificationCampaignQueue extends Command
                     throw $rabbitException;
                 }
 
-                /*
-                |--------------------------------------------------------------------------
-                | Dispatch Job
-                |--------------------------------------------------------------------------
-                */
 
                 Log::info('RabbitMQ Dispatch STARTING', [
                     'queue_id' => $notification->id,
@@ -145,11 +113,6 @@ class ProcessNotificationCampaignQueue extends Command
                 ]);
             } catch (Throwable $e) {
 
-                /*
-                |--------------------------------------------------------------------------
-                | If RabbitMQ dispatch fails
-                |--------------------------------------------------------------------------
-                */
 
                 NotificationCampaignQueue::where('id', $notification->id)
                     ->where('status', 'QUEUED')

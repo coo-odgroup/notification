@@ -267,35 +267,56 @@ class SendNotificationJob implements ShouldQueue
                 return;
             }
 
-            /*
-            |--------------------------------------------------------------------------
-            | Firebase Failed
-            |--------------------------------------------------------------------------
-            */
+            //Firebase Failed
 
             $errorMessage = 'Firebase notification failed';
 
-            if (isset($response['message'])) {
+            if (!empty($response['message'])) {
                 $errorMessage = $response['message'];
+            }
+
+            $errorCode = $response['error_code'] ?? null;
+
+            /*
+                * Also inspect the Firebase response itself
+                */
+            $firebaseErrorCode = data_get(
+                $response,
+                'response.error.status'
+            );
+
+            $firebaseErrorMessage = data_get(
+                $response,
+                'response.error.message'
+            );
+
+            if (!empty($firebaseErrorMessage)) {
+                $errorMessage = $firebaseErrorMessage;
+            }
+
+            if (!empty($firebaseErrorCode)) {
+                $errorCode = $firebaseErrorCode;
             }
 
             $isInvalidToken = false;
 
             if (
-                stripos($errorMessage, 'INVALID_ARGUMENT') !== false ||
+                $errorCode === 'UNREGISTERED' ||
+                $errorCode === 'INVALID_ARGUMENT' ||
+                $errorCode === 'NOT_FOUND' ||
                 stripos($errorMessage, 'UNREGISTERED') !== false ||
-                stripos($errorMessage, 'invalid registration token') !== false
+                stripos($errorMessage, 'INVALID_ARGUMENT') !== false ||
+                stripos($errorMessage, 'invalid registration token') !== false ||
+                stripos($errorMessage, 'registration token is not a valid FCM registration token') !== false ||
+                stripos($errorMessage, 'requested entity was not found') !== false
             ) {
                 $isInvalidToken = true;
             }
 
             if ($isInvalidToken) {
 
-                /*
-                |--------------------------------------------------------------------------
-                | Mark User Logged Out / Invalid Token
-                |--------------------------------------------------------------------------
-                */
+                // Mark User Logged Out / Invalid Token
+
 
                 User::where('id', $user->id)
                     ->where('login_status', 1)
@@ -320,7 +341,7 @@ class SendNotificationJob implements ShouldQueue
                     'fcm_token'         => $user->fcm_id,
                     'fcm_message_id'    => null,
                     'status'            => 'INVALID_TOKEN',
-                    'error_code'        => 'INVALID_TOKEN',
+                    'error_code'        => $errorCode,
                     'error_message'     => $errorMessage,
                     'firebase_response' => json_encode($response),
                     'sent_at'           => null,
@@ -362,7 +383,7 @@ class SendNotificationJob implements ShouldQueue
                 'fcm_token'         => $user->fcm_id,
                 'fcm_message_id'    => null,
                 'status'            => 'FAILED',
-                'error_code'        => null,
+                'error_code'        => $errorCode,
                 'error_message'     => $errorMessage,
                 'firebase_response' => json_encode($response),
                 'sent_at'           => null,
