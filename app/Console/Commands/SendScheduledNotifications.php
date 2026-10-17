@@ -41,6 +41,9 @@ class SendScheduledNotifications extends Command
 
         // $this->notification('EMAIL_VERIFIED', 'Documents_never_uploaded', $emailVerifyArr);
 
+        // EMAIL Notify
+        $this->sendEmail();
+
         $this->info('Scheduled notification sent successfully.');
 
         return Command::SUCCESS;
@@ -97,5 +100,34 @@ class SendScheduledNotifications extends Command
                     'sent_at' => now()
                 ]);
         }
+    }
+
+    public function sendEmail()
+    {
+        $agent = DB::table('user')->where('status', 1)->where('existing_agent', 0);
+
+        // Your account is waiting.
+        $agentWaiting = $agent
+            ->select('name', 'email')
+            ->where('is_first_recharge_done', 0)
+            ->where('is_mobile_verified', 0)
+            ->where('is_email_verified', 0)
+            ->where('is_pan_verified', 0)
+            ->where('is_aadhaar_verified', 0)
+            ->where('is_password_changed', 0)
+            ->get();
+
+        foreach ($agentWaiting as $key => $v) {
+            $msg91Arr['agent_name'] = $v->name;
+            $sentArr = [
+                'template_id' => config('msg91.EMAIL_TEMPLATE_IDS.WALLET_NOT_FOUNDED'),
+                'name' => $v->name,
+                'to' => $v->email,
+            ];
+
+            $this->msg91Service->sendEmail($msg91Arr, $sentArr);
+        }
+
+        Log::info($agentWaiting);
     }
 }
