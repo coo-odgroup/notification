@@ -49,7 +49,8 @@ class Msg91Service
                     'to' => [
                         [
                             'name' => $sentArr['name'],
-                            'email' => $sentArr['to']
+                            'email' => 'jagan.odbus@gmail.com'
+                            // 'email' => $sentArr['to']
                         ],
                     ],
                     'variables' => $msg91Arr,

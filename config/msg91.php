@@ -8,6 +8,8 @@ return [
     'FROM_EMAIL' => 'emailer@mail.odbus.in',
     'EMAIL_TEMPLATE_IDS' => [
         'WALLET_RECHARGE_SUCCESS' => 'odbus_agent_05_wallet_recharge_success',
-        'WALLET_NOT_FOUNDED' => 'odbus_agent_04_wallet_not_funded_offer_expired'
+        'WALLET_NOT_FUNDED' => 'odbus_agent_04_wallet_not_funded_offer_expired',
+        'WALLET_NOT_FUNDED_OFFER_LIVE' => 'odbus_agent_03_wallet_not_funded_offer_live',
+        'AGENT_ACTIVATED' => 'odbus_agent_02_welcome_activated_2'
     ]
 ];
